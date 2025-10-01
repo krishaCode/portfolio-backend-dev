@@ -9,10 +9,7 @@ app.use(cors());
 app.use(express.json()); // parse JSON body
 
 // ----- MongoDB connection -----
-mongoose.connect(process.env.MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
+mongoose.connect(process.env.MONGO_URI)
 .then(() => console.log('✅ MongoDB connected'))
 .catch(err => console.error('❌ MongoDB error:', err));
 
@@ -28,19 +25,31 @@ const messageSchema = new mongoose.Schema({
 const Message = mongoose.model('Message', messageSchema);
 
 // ----- Nodemailer setup (Gmail App Password) -----
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_PASS
-  }
-});
+let emailConfigured = false;
+let transporter;
 
-// optional: verify SMTP connection on startup
-transporter.verify((err, success) => {
-  if (err) console.error('✉️ SMTP verify failed:', err);
-  else console.log('✉️ SMTP ready');
-});
+if (process.env.GMAIL_USER && process.env.GMAIL_PASS) {
+  transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_PASS
+    }
+  });
+
+  // Verify SMTP connection on startup
+  transporter.verify((err, success) => {
+    if (err) {
+      console.warn('⚠️ SMTP verify failed, emails will not be sent:', err.message);
+      emailConfigured = false;
+    } else {
+      console.log('✉️ SMTP ready - emails will be sent');
+      emailConfigured = true;
+    }
+  });
+} else {
+  console.warn('⚠️ Email credentials not found, emails will not be sent');
+}
 
 // ----- Route to accept contact form -----
 app.post('/contact', async (req, res) => {
@@ -55,24 +64,38 @@ app.post('/contact', async (req, res) => {
     // Save to MongoDB
     const doc = new Message({ firstName, lastName, email, phone, message });
     await doc.save();
+    console.log('📩 Message saved to database');
 
-    // Send email to yourself
-    const mailOptions = {
-      from: process.env.GMAIL_USER,
-      to: process.env.GMAIL_USER,
-      subject: '📩 New Contact Form Message',
-      text: `
-You have a new contact message:
-Name: ${firstName} ${lastName || ''}
-Email: ${email}
-Phone: ${phone || 'N/A'}
+    // Send email to yourself if configured
+    if (emailConfigured && transporter) {
+      try {
+        const mailOptions = {
+          from: process.env.GMAIL_USER,
+          to: process.env.GMAIL_USER,
+          subject: '📩 New Contact Form Message - Portfolio',
+          html: `
+            <h2>New Contact Form Message</h2>
+            <p><strong>Name:</strong> ${firstName} ${lastName || ''}</p>
+            <p><strong>Email:</strong> ${email}</p>
+            <p><strong>Phone:</strong> ${phone || 'N/A'}</p>
+            <p><strong>Message:</strong></p>
+            <div style="background-color: #f5f5f5; padding: 15px; border-left: 4px solid #007bff;">
+              ${message}
+            </div>
+            <hr>
+            <p><small>Sent from your portfolio contact form at ${new Date().toLocaleString()}</small></p>
+          `
+        };
 
-Message:
-${message}
-      `
-    };
-
-    await transporter.sendMail(mailOptions);
+        await transporter.sendMail(mailOptions);
+        console.log('✉️ Email sent successfully to:', process.env.GMAIL_USER);
+      } catch (emailError) {
+        console.warn('⚠️ Failed to send email:', emailError.message);
+        // Don't fail the request if email fails
+      }
+    } else {
+      console.log('📧 Email not configured, skipping email send');
+    }
 
     return res.status(200).json({ code: 200, message: 'Message sent successfully!' });
   } catch (err) {
